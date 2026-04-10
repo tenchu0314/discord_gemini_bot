@@ -5,6 +5,12 @@ import discord
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 # .envファイルがあれば読み込む（ローカルテスト用）
 load_dotenv()
@@ -20,6 +26,25 @@ if not DISCORD_BOT_TOKEN or not GOOGLE_API_KEY:
 
 # Gemini クライアントの初期化
 gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+
+
+@retry(
+    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    before_sleep=lambda retry_state: print(
+        f"Retrying Gemini API call (attempt {retry_state.attempt_number}/5)..."
+    ),
+)
+def generate_content(prompt):
+    """Gemini API にリクエストを送信 (リトライ機能付き)"""
+    return gemini_client.models.generate_content(
+        model="gemini-3.1-pro-preview",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[{"google_search": {}}],
+        ),
+    )
+
 
 # Discord クライアントの初期化設定
 intents = discord.Intents.default()
@@ -75,16 +100,7 @@ async def on_message(message):
         async with message.channel.typing():
             try:
                 # Gemini API にリクエストを送信 (ブロッキング処理を回避するため別スレッドで実行)
-                def generate():
-                    return gemini_client.models.generate_content(
-                        model="gemini-3.1-pro-preview",
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            tools=[{"google_search": {}}],
-                        ),
-                    )
-
-                response = await asyncio.to_thread(generate)
+                response = await asyncio.to_thread(generate_content, prompt)
 
                 # レスポンスから推論部分を削除
                 reply_text = remove_thinking(response.text)
